@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Sep 13 15:14:36 2021
+
+#Update on the earlier code, so now a range of networks are generated. The setting of the FCVs are altered based
+    duty cycles. Finally, the model allows the system to run under the pre-defined duration of the duty cycle and the resutls 
+    found.
+@author: hamid
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import shutil
+import wntr
+
+root=os.getcwd()
+
+peak_factor_list=[2]
+demand_rate=0.85
+frequency=1
+LPS_to_CMPD=86.4
+name_base='FOS'
+link_address='root_networks/'+name_base+'.inp'
+timestep=60 #secondsf
+root=root+'/'+name_base
+
+if os.path.exists(root):
+    shutil.rmtree(root)
+os.makedirs(root)
+    
+day=86400
+assumed_pressure=30 #the average network pressure is assumed to be:
+time_indexing=range(timestep, int ((day/timestep+1))*timestep, timestep)
+pipe_diameter_power=0.38
+minor_loss_power=-0.479  
+
+for peak_factor in peak_factor_list: 
+
+    
+    if peak_factor==1:
+        path=root+'/AFM/'
+        
+    else: 
+        path=root+'/M-AFM/'+str(peak_factor)
+    
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    os.makedirs(path)
+    
+    subpath2=path+'/comparison between different leakage rates'
+    if os.path.exists(subpath2):
+        shutil.rmtree(subpath2)
+    os.makedirs(subpath2)
+    
+
+    leakage_rate_list=[0.15]
+    
+    weigthed_volume_list_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    total_input_volume_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    water_drawn_from_source_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    water_received_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    leaked_water_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    energyloss_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    powerloss_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    peak_input_flowrate_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    peak_received_flowrate_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    peak_leaked_flowrate_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+    elevation_weighted_flow_per_leakage_rate=pd.DataFrame(data=None, columns=leakage_rate_list)
+
+    for leakage_rate in leakage_rate_list:
+        
+        subpath=path+'/'+str(leakage_rate)
+        
+        if os.path.exists(subpath):
+            shutil.rmtree(subpath)
+        os.makedirs(subpath)
+        
+        
+        subsubpath1=subpath+'/generated_networks'
+        if os.path.exists(subsubpath1):
+            shutil.rmtree(subsubpath1)
+        os.makedirs(subsubpath1)
+        
+        subsubpath2=subpath+'/final_results'
+        if os.path.exists(subsubpath2):
+            shutil.rmtree(subsubpath2)
+        os.makedirs(subsubpath2)
+        
+        for time in time_indexing:
+        
+            CWS=wntr.network.WaterNetworkModel(inp_file_name=link_address)
+            
+            #for now the simple step is to add reservoirs and see what happens for the pressure
+            results_CWS=wntr.sim.EpanetSimulator(CWS).run_sim()
+            junction_list_before_IWS=CWS.junction_name_list
+            
+                #The emitter coefficient will be caluculated based on the average pressure through network:
+            pressure_CWS=results_CWS.node['pressure']
+            pressure_CWS=pressure_CWS.drop(columns=CWS.reservoir_name_list)
+            mean_network_CWS=pressure_CWS.mean().mean()
+                #Only junctions with demand (non_zero) demand will be taken into account
+            demands_CWS=results_CWS.node['demand']
+            zero_demand_nodes=[]
+            for i in demands_CWS.columns:
+                if demands_CWS[i].any()==0:
+                    zero_demand_nodes=zero_demand_nodes+[i]      
+                    # the columns with zero demands and the reservoirs are dropped from the nodes
+            demands_CWS=demands_CWS.drop(columns=CWS.reservoir_name_list+zero_demand_nodes)
+            
+            emitters_coefficient=leakage_rate*demands_CWS/mean_network_CWS
+            emitters_coefficient_simplified=leakage_rate*demands_CWS/assumed_pressure
+            
+            emitter_list= ['Emit'+str(num) for num in demands_CWS.columns]
+            emitters_coefficient.columns=emitter_list
+            emitters_coefficient_simplified.columns=emitter_list
+            
+            
+            for t in demands_CWS.columns: 
+               CWS.add_junction('Emit'+t, base_demand= 0.00, elevation=CWS.nodes[t].elevation,\
+                               coordinates=tuple (np.subtract (CWS.nodes[t].coordinates,(100,100))))
+            
+            for emitter in emitter_list:  
+               CWS.nodes[str (emitter)].emitter_coefficient=float(emitters_coefficient_simplified[emitter])
+               
+            for t in demands_CWS.columns:
+                diameter_average=0
+                
+                for link in CWS.get_links_for_node(t):
+                    if link in CWS.pump_name_list:
+                        continue 
+                    diameter_average=diameter_average+CWS.get_link(link).diameter
+                    
+                diameter_average=diameter_average/len (CWS.get_links_for_node(t))    
+                
+                CWS.add_pipe('PipeforEmit'+t, t,'Emit'+t,length=1,diameter=diameter_average,roughness=130\
+                             ,minor_loss=0,initial_status='CV',check_valve=True)
+                
+            #adding tanks to the network
+            
+            for i in demands_CWS.columns:
+                    CWS.add_tank('AT'+i,elevation=CWS.get_node(i).elevation,init_level=0,min_level=0,max_level=1,\
+                                 diameter=np.sqrt (4*(demand_rate)*1000*demands_CWS[i][0]*LPS_to_CMPD/np.pi/frequency),\
+                               coordinates=tuple (np.add (CWS.nodes[i].coordinates,(200,200))))
+            
+            for i in demands_CWS.columns:
+                    CWS.add_junction('FN1for'+i,base_demand=0,elevation=CWS.get_node(i).elevation,\
+                                     coordinates=tuple (np.add(CWS.get_node(i).coordinates,(150,150))))
+                
+            for i in demands_CWS.columns:
+                    CWS.add_pipe('AP1for'+i, 'FN1for'+i,'AT'+i,length=10,diameter=15/1000*((CWS.get_node(i).base_demand*1000*LPS_to_CMPD)**(pipe_diameter_power)),\
+                                 roughness=130,minor_loss=8*(CWS.get_node(i).base_demand*1000*LPS_to_CMPD)**(minor_loss_power),initial_status='CV',check_valve=True)
+                        
+            for i in demands_CWS.columns:
+                CWS.add_valve('FCV'+i,i ,'FN1for'+i,diameter=0.400,valve_type='FCV',\
+                                 initial_setting=(demand_rate)*CWS.get_node(i).base_demand/(1.001*time/peak_factor/day))
+                
+                #removing the demands for nodes for all of the nodes, only base values of the demand time series is set to zero
+            for i in demands_CWS.columns:
+                CWS.get_node(i).demand_timeseries_list[0].base_value=0
+    
+            #The time options of the network is changed so it would fit in the extended period analysis\
+            #of the IWS and the variation    
+           
+            Hydraulic=CWS.options.hydraulic
+            Hydraulic.emitter_exponent=1
+            Hydraulic.accuracy=0.001
+            Hydraulic.trials=500
+            Hydraulic.checkfreq=2 
+            CWS.options.quality.parameter='NONE'
+            TimeOptions=CWS.options.time
+            TimeOptions.duration=time
+            TimeOptions.hydraulic_timestep=60
+            TimeOptions.quality_timestep=300
+            TimeOptions.rule_timestep=60
+            TimeOptions.pattern_timestep=3600
+            TimeOptions.report_timestep=60
+            TimeOptions.report_start=0
+            TimeOptions.start_clocktime=0
+            TimeOptions.statistic='None'
+            
+
+            
+            generate_path=subsubpath1+'/'+name_base+str (time)+'.inp'
+            CWS.write_inpfile(generate_path,units='LPS',version=2.2)   
+            
+        
+        columns=wntr.sim.EpanetSimulator(wntr.network.WaterNetworkModel(inp_file_name=generate_path)).run_sim().node['pressure'].columns
+        
+        
+        simulatedpressure=pd.DataFrame(columns=columns)
+    
+        
+        input_volume_list=pd.DataFrame(data=None, columns=['Total input volume'],index=time_indexing)['Total input volume']
+        demand_satisfaction_volume_list=pd.DataFrame(data=None, columns=['Demand Satisfaction volume'],index=time_indexing)['Demand Satisfaction volume']
+    #   demand_satisfaction_volume_list_2=pd.DataFrame(data=None, columns=['Demand Satisfaction volume_2'],index=time_indexing)['Demand Satisfaction volume_2']
+        
+        leakage_volume_list=pd.DataFrame(data=None, columns=['leakage volume'],index=time_indexing)['leakage volume']
+    #   leakage_volume_list_2=pd.DataFrame(data=None, columns=['leakage volume_2'],index=time_indexing)['leakage volume_2']
+    #   leakage_volume_list_3=pd.DataFrame(data=None, columns=['leakage volume_3'],index=time_indexing)['leakage volume_3']
+        
+    #
+        energyloss=pd.DataFrame(data=None, columns=['Energy_loss'],index=time_indexing)['Energy_loss']
+        powerloss=pd.DataFrame(data=None, columns=['Power_loss'],index=time_indexing)['Power_loss']
+        elevation_weighted_flow_dataframe=pd.DataFrame(data=None, columns=['energy rate reserved'],index=time_indexing)['energy rate reserved']
+        peak_input_flowrate=pd.DataFrame(data=None, columns=['Peak inout Flow rate'], index=time_indexing)['Peak inout Flow rate']
+        peak_received_flowrate=pd.DataFrame(data=None, columns=['Peak Received Flow rate'], index=time_indexing)['Peak Received Flow rate']
+        peak_leaked_flowrate=pd.DataFrame(data=None,columns=['Peak Leaked Flow rate'], index=time_indexing)['Peak Leaked Flow rate']
+        average_pressure=pd.DataFrame(data=None,columns=['Average pressure emitters'], index=time_indexing)['Average pressure emitters']
+        
+        for duration in time_indexing:
+            wn=wntr.network.WaterNetworkModel(inp_file_name=subsubpath1+'/'+name_base+str (duration)+'.inp')
+            results=wntr.sim.EpanetSimulator(wn).run_sim()
+            pressure=results.node['pressure']
+
+            #pressure.to_excel(name_base+'/'+str(leakage_rate)+'/timesteps_results/pressure/'+'network_pressure_in_duration_of_'+str (duration)+'.xlsx')
+            pressure_lastrow=pd.DataFrame.transpose(pd.DataFrame.transpose(pressure).iloc[:,-1:])
+            simulatedpressure=pd.concat([simulatedpressure,pressure_lastrow])
+            
+            flowrate=results.link['flowrate'].drop(columns=wn.pump_name_list)
+            #flowrate.to_excel(name_base+'/'+str (leakage_rate)+'/timesteps_results/flowrate/'+'network_flowrate_in_duration_of_'+str (duration)+'.xlsx')
+            demand=results.node['demand']
+            input_volume_list[duration]=demand[wn.reservoir_name_list].sum().sum()*timestep
+            
+            pipe_tank_list=[]
+            for tank in wn.tank_name_list:
+                pipe_tank=wn.get_links_for_node(tank)
+                pipe_tank_list=pipe_tank_list+pipe_tank
+    
+            demand_satisfaction_volume_list[duration]=demand[wn.tank_name_list].sum().sum()*timestep            
+    #       demand_satisfaction_volume=(flowrate[pipe_tank_list].sum().sum())*timestep
+    #       demand_satisfaction_volume_list_2[duration]=demand_satisfaction_volume
+    
+            emitter_list_found=[]
+            for tank in wn.tank_name_list:
+                emitter_list_found=emitter_list_found+[tank.replace('AT','Emit')]
+    
+            leakage_volume_list[duration]=demand[emitter_list_found].sum().sum()*timestep
+    #       leakage_volume_list_2[duration]=(pressure[emitter_list].sum()*emitters_coefficient_simplified).sum(axis=1)[0]*timestep
+            
+    #       emitter_connection_list=[]
+    #       for emitter in emitter_list_found:
+    #           emitter_connection_list=emitter_connection_list+wn.get_links_for_node(emitter)
+    #       leakage_volume_list_3[duration]=((flowrate[emitter_connection_list]).sum(axis=1)).sum()*timestep
+            average_pressure_thorugh_duration=pressure[emitter_list].mean(axis=1).mean()
+            average_pressure[duration]=average_pressure_thorugh_duration
+            
+            headloss=results.link['headloss'].drop(columns=wn.pump_name_list)
+            #headloss.to_excel(name_base+'/'+str (leakage_rate)+'/timesteps_results/headloss/'+'network_headloss_in_duration_of_'+str (duration)+'.xlsx')
+            
+            elevation_weighted_flow=0
+            
+            for tank in wn.tank_name_list:
+                elevation_weighted_flow=elevation_weighted_flow+(demand[tank].sum()*wn.get_node(tank).elevation)
+            
+            elevation_weighted_flow_dataframe[duration]=elevation_weighted_flow
+    
+            energyloss[duration]=((headloss.abs()*flowrate.abs()).drop(columns=wn.valve_name_list)).sum().sum()*timestep
+            powerloss[duration]=(headloss.abs()*flowrate.abs()).drop(columns=wn.valve_name_list).sum(axis=1).max()
+            
+            peak_input_flowrate[duration]=(-1*(demand[wn.reservoir_name_list].sum(axis=1))).max()
+            peak_leaked_flowrate[duration]=demand[emitter_list_found].sum(axis=1).max()
+            peak_received_flowrate[duration]=demand[wn.tank_name_list].sum(axis=1).max()
+            
+            average_pressure[duration]=average_pressure_thorugh_duration
+       
+        input_volume_list.index=input_volume_list.index/day
+        demand_satisfaction_volume_list.index=demand_satisfaction_volume_list.index/day
+        leakage_volume_list.index=leakage_volume_list.index/day
+        energyloss.index=energyloss.index/day
+        powerloss.index=powerloss.index/day
+        peak_input_flowrate.index=peak_input_flowrate.index/day
+        peak_leaked_flowrate.index=peak_leaked_flowrate.index/day
+        peak_received_flowrate.index=peak_received_flowrate.index/day
+        elevation_weighted_flow_dataframe.index=elevation_weighted_flow_dataframe.index/day
+        average_pressure.index=average_pressure.index/day
+
+        tank_diameter=pd.DataFrame(data=None, columns=wn.tank_name_list)
+        weighted_volume=pd.DataFrame(data=None, columns=wn.tank_name_list)
+        weighted_volume_list=pd.DataFrame(data=None, columns=['Weighted Volume'])['Weighted Volume']
+        for tank in wn.tank_name_list:
+              tank_diameter[tank]=[wn.get_node(tank).diameter]
+        tank_volume=np.pi*tank_diameter**2/4
+        
+        
+        for tank in wn.tank_name_list:    
+          weighted_volume[tank]=simulatedpressure[tank]*tank_volume[tank][0]
+        
+        weighted_volume_list=weighted_volume[simulatedpressure[wn.tank_name_list]>0.99].sum(axis=1)
+        weighted_volume_list.index=weighted_volume_list.index/day    
+        
+        
+        
+        
+        #plt.figure()
+        #plt.plot(demand_satisfaction_volume_list+leakage_volume_list)
+        #plt.plot(demand_satisfaction_volume_list)
+        #plt.plot(leakage_volume_list)
+        #plt.legend(['Total Volume Input', 'Demand Satisfaction Volume', 'Leakage Volume'])
+        #plt.xlabel('Duty cycle')
+        #plt.ylabel('Volume (lit)')
+        
+        plt.figure()
+        plt.plot(energyloss)
+        plt.xlabel('Duty cycle')
+        plt.ylabel('headloss*flowrate')
+        
+        
+        simulatedpressure.to_excel(subsubpath2+'/pressure.xlsx')
+        weighted_volume_list.to_excel(subsubpath2+'/weighted volume.xlsx')
+        (demand_satisfaction_volume_list+leakage_volume_list).to_excel(subsubpath2+'/Total_input_volume.xlsx')
+        input_volume_list.to_excel(subsubpath2+'/Calculated_total_input_volume.xlsx')
+        demand_satisfaction_volume_list.to_excel(subsubpath2+'/demand_satisfaction_volume.xlsx')
+        leakage_volume_list.to_excel(subsubpath2+'/Leakage_volume.xlsx')
+        energyloss.to_excel(subsubpath2+'/Energyloss.xlsx')
+        powerloss.to_excel(subsubpath2+'/Powerloss.xlsx')
+        elevation_weighted_flow_dataframe.to_excel(subsubpath2+'/elevation weighted flow.xlsx')
+        average_pressure.to_excel(subsubpath2+'/Average Pressure.xlsx')
+
+        
+        weigthed_volume_list_per_leakage_rate[leakage_rate]=weighted_volume_list
+        total_input_volume_per_leakage_rate[leakage_rate]=demand_satisfaction_volume_list+leakage_volume_list
+        water_drawn_from_source_leakage_rate[leakage_rate]=input_volume_list
+        water_received_per_leakage_rate[leakage_rate]=demand_satisfaction_volume_list
+        leaked_water_per_leakage_rate[leakage_rate]=leakage_volume_list
+        energyloss_per_leakage_rate[leakage_rate]=energyloss
+        powerloss_per_leakage_rate[leakage_rate]=powerloss
+        elevation_weighted_flow_per_leakage_rate[leakage_rate]=elevation_weighted_flow_dataframe
+        
+        peak_input_flowrate_per_leakage_rate[leakage_rate]=peak_input_flowrate
+        peak_received_flowrate_per_leakage_rate[leakage_rate]=peak_received_flowrate
+        peak_leaked_flowrate_per_leakage_rate[leakage_rate]=peak_leaked_flowrate
+    
+    weigthed_volume_list_per_leakage_rate.to_excel(subpath2+'/weighted volume.xlsx')
+    total_input_volume_per_leakage_rate.to_excel(subpath2+'/Total Water input.xlsx')
+    water_drawn_from_source_leakage_rate.to_excel(subpath2+'/water drawn from resource.xlsx')
+    leaked_water_per_leakage_rate.to_excel(subpath2+'/Leakage water.xlsx')
+    energyloss_per_leakage_rate.to_excel(subpath2+'/energy loss.xlsx')
+    powerloss_per_leakage_rate.to_excel(subpath2+'/powerloss.xlsx')
+    
+    peak_input_flowrate_per_leakage_rate.to_excel(subpath2+'/Peak Input flow rate.xlsx')
+    peak_received_flowrate_per_leakage_rate.to_excel(subpath2+'/Peak Received flow rate.xlsx')
+    peak_leaked_flowrate_per_leakage_rate.to_excel(subpath2+'/Peak Leaked Flow rate.xlsx')
+        
+    elevation_weighted_flow_per_leakage_rate.to_excel(subpath2+'/Elevation weighted flow rate.xlsx')
+    #    leakage_volume_list_2.to_excel(name_base+'/'+str(leakage_rate)+'/final_results/alternative results/leakage_volume_2.xlsx')
+    #    leakage_volume_list_3.to_excel(name_base+'/'+str(leakage_rate)+'/final_results/alternative results/leakage_volume_3.xlsx')
+    #    demand_satisfaction_volume_list_2.to_excel(name_base+'/'+str(leakage_rate)+'/final_results/alternative results/demand_volume_2.xlsx')
