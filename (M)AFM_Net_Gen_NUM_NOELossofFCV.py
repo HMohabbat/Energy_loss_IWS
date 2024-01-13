@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Sep 13 15:14:36 2021
-
-#Update on the earlier code, so now a range of networks are generated. The setting of the FCVs are altered based
-    duty cycles. Finally, the model allows the system to run under the pre-defined duration of the duty cycle and the resutls 
-    found.
-@author: hamid
-"""
 
 import numpy as np
 import pandas as pd
@@ -18,11 +8,14 @@ import wntr
 
 root=os.getcwd()
 
+# The series of assumptions for developing a Patient and a Cautious household in an intermittent water supply network based
+# on the continuously operated network of Modena.
+
 peak_factor_list=[2]
 demand_rate=0.85
 frequency=1
 LPS_to_CMPD=86.4
-name_base='FOS'
+name_base='MOD'
 link_address='root_networks/'+name_base+'.inp'
 timestep=60 #secondsf
 root=root+'/'+name_base
