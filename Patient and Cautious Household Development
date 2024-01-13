@@ -1,3 +1,7 @@
+"""
+This file can be used in developing a Patient and a Cautious household in an intermittent water supply network
+based on the continuously operated version of the network. In this edition, the Modena network was discussed.
+"""
 
 import numpy as np
 import pandas as pd
@@ -8,16 +12,15 @@ import wntr
 
 root=os.getcwd()
 
-# The series of assumptions for developing a Patient and a Cautious household in an intermittent water supply network based
-# on the continuously operated network of Modena.
+# The series of assumptions for the cautious and patient household.
 
-peak_factor_list=[2]
-demand_rate=0.85
-frequency=1
-LPS_to_CMPD=86.4
-name_base='MOD'
+peak_factor_list=[2] #the cautious household is assumed to use the first 1/2 of the supply duration.
+demand_rate=0.85 #85% of the original demand in contiously-run network would be dedicated for demannd satisfaction.
+supply_period=1 #the network is being fed every day (T=1), .
+LPS_to_CMPD=86.4 #unit conversion from Liters per second to Cubic meter per day. Cubic meter per day is used for most of volume reports. 
+name_base='MOD' #the target network is Modena. The .inp was drawn from water network repository: https://doi.org/10.13023/kwrri.wdsrd.
 link_address='root_networks/'+name_base+'.inp'
-timestep=60 #secondsf
+timestep=60 #seconds
 root=root+'/'+name_base
 
 if os.path.exists(root):
@@ -25,13 +28,12 @@ if os.path.exists(root):
 os.makedirs(root)
     
 day=86400
-assumed_pressure=30 #the average network pressure is assumed to be:
+assumed_pressure=30 #the average network pressure is assumed to be 30 meters in order to calculate the emitter coefficients.
 time_indexing=range(timestep, int ((day/timestep+1))*timestep, timestep)
 pipe_diameter_power=0.38
-minor_loss_power=-0.479  
+minor_loss_power=-0.479
 
 for peak_factor in peak_factor_list: 
-
     
     if peak_factor==1:
         path=root+'/AFM/'
@@ -135,7 +137,7 @@ for peak_factor in peak_factor_list:
             
             for i in demands_CWS.columns:
                     CWS.add_tank('AT'+i,elevation=CWS.get_node(i).elevation,init_level=0,min_level=0,max_level=1,\
-                                 diameter=np.sqrt (4*(demand_rate)*1000*demands_CWS[i][0]*LPS_to_CMPD/np.pi/frequency),\
+                                 diameter=np.sqrt (4*(demand_rate)*1000*demands_CWS[i][0]*LPS_to_CMPD/np.pi/supply_period),\
                                coordinates=tuple (np.add (CWS.nodes[i].coordinates,(200,200))))
             
             for i in demands_CWS.columns:
